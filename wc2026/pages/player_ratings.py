@@ -14,10 +14,12 @@ from models.prediction_engine import PlayerRatingPredictor
 
 POS_ENC = {"GK":0,"DEF":1,"MID":2,"FWD":3}
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def _model():
     prp = PlayerRatingPredictor()
-    prp.load()
+    if not prp.load():
+        from models.prediction_engine import _synthetic_player_df
+        prp.train(_synthetic_player_df())   # auto-train once on cold start
     return prp
 
 def render():

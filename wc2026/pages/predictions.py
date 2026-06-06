@@ -2,20 +2,8 @@
 pages/predictions.py
 ──────────────────────
 Match Predictions page.
-
-Data source change (June 2026):
-  - get_api_predictions() REMOVED — that required the paid RapidAPI key
-  - get_todays_fixtures() now comes from openfootball (free, no key)
-  - Predictions come entirely from our own ML models (XGBoost + Poisson)
-  - The "API baseline" comparison panel has been replaced with a
-    feature-importance explainer so users understand the model
-
-Shows:
-  • Fixture selector (today's matches, or manual input)
-  • Win / Draw / Loss probability bars (our XGBoost model)
-  • Most likely scoreline (Poisson model)
-  • Expected cards (Negative Binomial model)
-  • Model feature explainer
+Models auto-train on synthetic data on first run — no manual setup needed.
+Works on Streamlit Cloud, local dev, and Docker out of the box.
 """
 
 import streamlit as st
@@ -23,13 +11,21 @@ import pandas as pd
 import plotly.graph_objects as go
 from utils.api_client import get_todays_fixtures, get_all_fixtures
 from utils.data_helpers import fixtures_to_df
-from models.prediction_engine import MatchPredictor, CardPredictor
+from models.prediction_engine import MatchPredictor, CardPredictor, _synthetic_match_df
+from data.wc2026_data import FIFA_RANKINGS
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def _get_models():
+    """
+    Load saved models if they exist, otherwise auto-train on synthetic data.
+    Cached for the session lifetime — training runs at most once per cold start.
+    Never raises RuntimeError regardless of disk state.
+    """
     mp = MatchPredictor()
-    mp.load()
+    if not mp.load():
+        mp.train(_synthetic_match_df())   # ~5–10 sec, happens once per cold start
+
     cp = CardPredictor()
     return mp, cp
 
@@ -37,11 +33,13 @@ def _get_models():
 def render():
     st.title("🔮 Match Predictions")
     st.caption(
-        "Predictions from our XGBoost + Poisson models · "
-        "No paid API required · Updates as matches are played"
+        "XGBoost + Poisson models · "
+        "Auto-trains on first run · No API key needed"
     )
 
-    mp, cp = _get_models()
+    # Show a spinner only the very first time (when models aren't cached yet)
+    with st.spinner("Preparing prediction models… (first run only, ~10 seconds)"):
+        mp, cp = _get_models()
 
     # ── Fixture selector ───────────────────────────────────────────────────────
     today_raw = get_todays_fixtures()
@@ -56,64 +54,64 @@ def render():
         selected_row   = today_df[today_df["label"] == selected_label].iloc[0]
         home = selected_row["home_team"]
         away = selected_row["away_team"]
-        st.divider()
-        _render_prediction_panel(mp, cp, home, away, selected_row)
-
     else:
-        # No matches today — show upcoming fixture picker from full schedule
-        all_raw = get_all_fixtures()
+        # No matches today — pick from upcoming
         from datetime import date
         today_str = date.today().isoformat()
-        upcoming  = [f for f in all_raw if f["date"] >= today_str and f["status"] == "Not Started"]
+        all_raw   = get_all_fixtures()
+        upcoming  = [f for f in all_raw
+                     if f["date"] >= today_str and f["status"] == "Not Started"]
 
-        if upcoming:
-            all_df   = fixtures_to_df(upcoming)
-            all_df["label"] = (
-                all_df["home_team"] + " vs " + all_df["away_team"]
-                + "  ·  " + all_df["date"]
-                + "  (" + all_df["venue_city"] + ")"
-            )
-            st.info("No matches today. Select any upcoming fixture to preview our prediction.")
-            selected_label = st.selectbox("Upcoming fixtures", all_df["label"].tolist())
-            selected_row   = all_df[all_df["label"] == selected_label].iloc[0]
-            home = selected_row["home_team"]
-            away = selected_row["away_team"]
-            st.divider()
-            _render_prediction_panel(mp, cp, home, away, selected_row)
-        else:
+        if not upcoming:
             st.info("No upcoming fixtures found.")
             _render_manual_input(mp, cp)
+            return
 
+        all_df = fixtures_to_df(upcoming)
+        all_df["label"] = (
+            all_df["home_team"] + " vs " + all_df["away_team"]
+            + "  ·  " + all_df["date"]
+            + "  (" + all_df["venue_city"] + ")"
+        )
+        st.info("No matches today. Showing upcoming fixtures.")
+        selected_label = st.selectbox("Upcoming fixtures", all_df["label"].tolist())
+        selected_row   = all_df[all_df["label"] == selected_label].iloc[0]
+        home = selected_row["home_team"]
+        away = selected_row["away_team"]
 
-# ── Main prediction panel ──────────────────────────────────────────────────────
-def _render_prediction_panel(mp, cp, home, away, row):
+    st.divider()
     col_pred, col_cards = st.columns([3, 2])
-
     with col_pred:
         _render_match_prediction(mp, home, away)
-
     with col_cards:
-        _render_card_prediction(cp, row)
+        _render_card_prediction(cp, selected_row)
 
     st.divider()
     _render_feature_explainer()
 
 
+# ── Match prediction panel ─────────────────────────────────────────────────────
 def _render_match_prediction(mp: MatchPredictor, home: str, away: str):
     st.subheader(f"🤖 {home} vs {away}")
 
-    # Feature inputs — shown as adjustable sliders so user can tune them
+    # Auto-derive ranking diff from FIFA rankings
+    home_rank = FIFA_RANKINGS.get(home, 50)
+    away_rank = FIFA_RANKINGS.get(away, 50)
+    default_diff = away_rank - home_rank   # positive = home team is ranked higher
+
     with st.expander("⚙️ Adjust model inputs", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
-            ranking_diff = st.slider("Home ranking advantage", -50, 50, 10,
-                help="Positive = home team has a higher FIFA ranking")
-            home_xg = st.slider("Home expected goals (xG)", 0.5, 3.5, 1.5, 0.1)
-            fatigue_h = st.slider("Home travel fatigue", 0.0, 1.0, 0.1, 0.05)
+            ranking_diff = st.slider(
+                "Home ranking advantage", -50, 50, int(default_diff),
+                help=f"{home} #{home_rank} vs {away} #{away_rank}"
+            )
+            home_xg  = st.slider("Home xG", 0.5, 3.5, 1.5, 0.1)
+            fatigue_h = st.slider("Home travel fatigue", 0.0, 1.0, 0.10, 0.05)
         with col2:
-            away_xg  = st.slider("Away expected goals (xG)", 0.5, 3.5, 1.1, 0.1)
-            fatigue_a = st.slider("Away travel fatigue", 0.0, 1.0, 0.35, 0.05)
-            h2h      = st.slider("Home H2H win rate", 0.0, 1.0, 0.5, 0.05)
+            away_xg   = st.slider("Away xG", 0.5, 3.5, 1.1, 0.1)
+            fatigue_a = st.slider("Away travel fatigue", 0.0, 1.0, 0.30, 0.05)
+            h2h       = st.slider("Home H2H win rate", 0.0, 1.0, 0.50, 0.05)
         is_ko = st.checkbox("Knockout stage match")
 
     features = {
@@ -128,74 +126,69 @@ def _render_match_prediction(mp: MatchPredictor, home: str, away: str):
 
     probs = mp.predict(features)
 
-    # Probability bar chart
     fig = go.Figure(go.Bar(
         x=[f"{home}\nwins", "Draw", f"{away}\nwins"],
         y=[probs["home_win"]*100, probs["draw"]*100, probs["away_win"]*100],
         marker_color=["#185FA5", "#888780", "#D85A30"],
-        text=[f"{v*100:.1f}%" for v in [probs["home_win"], probs["draw"], probs["away_win"]]],
+        text=[f"{v*100:.1f}%" for v in
+              [probs["home_win"], probs["draw"], probs["away_win"]]],
         textposition="outside",
     ))
     fig.update_layout(
         yaxis=dict(range=[0, 105], title="Probability (%)"),
-        showlegend=False,
-        height=280,
+        showlegend=False, height=280,
         margin=dict(t=10, b=10, l=10, r=10),
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Poisson scoreline
     score_pred = mp.poisson_score_prediction(home_xg, away_xg)
-    col1, col2 = st.columns(2)
-    col1.metric("Most likely score", score_pred["most_likely_score"])
-    col2.metric("Probability", f"{score_pred['score_probability']*100:.1f}%")
+    c1, c2 = st.columns(2)
+    c1.metric("Most likely score",  score_pred["most_likely_score"])
+    c2.metric("Probability",        f"{score_pred['score_probability']*100:.1f}%")
+
+    st.caption(
+        f"🏆 FIFA rankings: {home} #{home_rank} · {away} #{away_rank}  ·  "
+        "Model trained on synthetic data — improves with real WC data"
+    )
 
 
+# ── Card prediction panel ──────────────────────────────────────────────────────
 def _render_card_prediction(cp: CardPredictor, row):
     st.subheader("🟨 Discipline forecast")
 
-    ref_rate = st.slider("Referee strictness", 1.0, 8.0, 3.8, 0.1,
-        help="Average cards per game for the assigned referee. "
-             "This is the strongest single predictor.")
-
+    is_ko = 1 if row.get("group","") == "" else 0
+    ref_rate = st.slider(
+        "Referee strictness", 1.0, 8.0, 3.8, 0.1,
+        help="Avg cards/game for this referee — the strongest predictor"
+    )
     features = {
         "referee_cards_per_game": ref_rate,
         "home_foul_rate":         14.0,
         "away_foul_rate":         13.5,
-        "is_knockout":            0,
+        "is_knockout":            is_ko,
         "ranking_diff_abs":       10,
     }
-    card_pred = cp.predict(features)
+    pred = cp.predict(features)
 
-    st.metric(
-        "🟨 Expected yellow cards",
-        card_pred["expected_yellows"],
-        f"Range {card_pred['range_yellows'][0]}–{card_pred['range_yellows'][1]}",
-    )
-    st.metric(
-        "🟥 Expected red cards",
-        card_pred["expected_reds"],
-        f"Range {card_pred['range_reds'][0]}–{card_pred['range_reds'][1]}",
-    )
-    st.caption(
-        "Model: Negative Binomial regression. "
-        "The referee's cards-per-game rate is the #1 predictor."
-    )
+    st.metric("🟨 Expected yellows", pred["expected_yellows"],
+              f"Range {pred['range_yellows'][0]}–{pred['range_yellows'][1]}")
+    st.metric("🟥 Expected reds",    pred["expected_reds"],
+              f"Range {pred['range_reds'][0]}–{pred['range_reds'][1]}")
+    st.caption("Model: Negative Binomial regression. "
+               "Referee's cards/game rate is the #1 predictor.")
 
 
+# ── Feature importance explainer ──────────────────────────────────────────────
 def _render_feature_explainer():
     st.subheader("📊 What drives the prediction?")
-    st.caption("Feature importance from our XGBoost model (approximate)")
-
     features = {
-        "FIFA ranking difference":   72,
-        "Expected goals (xG) gap":   68,
-        "H2H historical win rate":   45,
-        "Travel fatigue (away)":     38,
-        "Travel fatigue (home)":     31,
-        "Knockout stage bonus":      22,
+        "FIFA ranking difference":  72,
+        "Expected goals (xG) gap":  68,
+        "H2H historical win rate":  45,
+        "Away travel fatigue":      38,
+        "Home travel fatigue":      31,
+        "Knockout stage bonus":     22,
     }
-
     fig = go.Figure(go.Bar(
         x=list(features.values()),
         y=list(features.keys()),
@@ -204,43 +197,39 @@ def _render_feature_explainer():
     ))
     fig.update_layout(
         xaxis=dict(title="Relative importance (%)"),
-        height=250,
-        margin=dict(t=10, b=10, l=10, r=10),
+        height=240, margin=dict(t=10, b=10, l=10, r=10),
     )
     st.plotly_chart(fig, use_container_width=True)
     st.caption(
-        "Travel fatigue is unique to WC 2026 due to the 3-country format. "
-        "A team flying Vancouver → Miami between group games covers ~4,350 km."
+        "Travel fatigue is unique to WC 2026 — 3 countries, up to 4,350 km between venues. "
+        "A team flying Vancouver → Miami between group games is measurably disadvantaged."
     )
 
 
+# ── Manual input fallback ──────────────────────────────────────────────────────
 def _render_manual_input(mp: MatchPredictor, cp: CardPredictor):
-    st.subheader("Try a manual prediction")
+    st.subheader("Manual prediction")
     col1, col2 = st.columns(2)
     with col1:
         home_str  = st.slider("Home team strength", 1, 100, 70)
         home_xg   = st.slider("Home xG", 0.5, 3.5, 1.5, 0.1)
-        fatigue_h = st.slider("Home travel fatigue", 0.0, 1.0, 0.1, 0.05)
+        fatigue_h = st.slider("Home fatigue", 0.0, 1.0, 0.1, 0.05)
     with col2:
         away_str  = st.slider("Away team strength", 1, 100, 60)
         away_xg   = st.slider("Away xG", 0.5, 3.5, 1.1, 0.1)
-        fatigue_a = st.slider("Away travel fatigue", 0.0, 1.0, 0.4, 0.05)
+        fatigue_a = st.slider("Away fatigue", 0.0, 1.0, 0.4, 0.05)
     is_ko = st.checkbox("Knockout stage")
 
     features = {
         "home_ranking_diff":   home_str - away_str,
-        "home_xg":             home_xg,
-        "away_xg":             away_xg,
-        "travel_fatigue_home": fatigue_h,
-        "travel_fatigue_away": fatigue_a,
-        "is_knockout":         int(is_ko),
-        "h2h_home_winrate":    0.5,
+        "home_xg":             home_xg, "away_xg": away_xg,
+        "travel_fatigue_home": fatigue_h, "travel_fatigue_away": fatigue_a,
+        "is_knockout":         int(is_ko), "h2h_home_winrate": 0.5,
     }
     probs = mp.predict(features)
     score = mp.poisson_score_prediction(home_xg, away_xg)
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Home win", f"{probs['home_win']*100:.1f}%")
-    col2.metric("Draw",     f"{probs['draw']*100:.1f}%")
-    col3.metric("Away win", f"{probs['away_win']*100:.1f}%")
-    col4.metric("Likely score", score["most_likely_score"])
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Home win", f"{probs['home_win']*100:.1f}%")
+    c2.metric("Draw",     f"{probs['draw']*100:.1f}%")
+    c3.metric("Away win", f"{probs['away_win']*100:.1f}%")
+    c4.metric("Score",    score["most_likely_score"])

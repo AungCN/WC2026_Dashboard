@@ -44,8 +44,8 @@ else:
         st.rerun()
 
 # ── Sidebar navigation ─────────────────────────────────────────────────────────
-st.sidebar.image("pages/worldcuplogo2026.png", width=140)
 st.sidebar.title("FIFA World Cup 2026")
+st.sidebar.title("United States: Canada: Mexico")
 st.sidebar.caption("Live Analytics & Predictions")
 
 page = st.sidebar.radio(
