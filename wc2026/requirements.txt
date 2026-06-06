@@ -1,9 +1,14 @@
 # WC 2026 Dashboard — Python Dependencies
-# Install with:  pip install -r requirements.txt
+#
+# INSTALL (inside your venv):
+#   pip install -r requirements.txt
+#
+# If you get a ModuleNotFoundError for any package, run the above command
+# again — it means that package was skipped or the venv was not active.
 
 # ── Web framework ──────────────────────────────────────────────────────────────
 streamlit>=1.35.0
-streamlit-autorefresh>=1.0.1
+streamlit-autorefresh==1.0.1      # pip install streamlit-autorefresh
 
 # ── API & networking ───────────────────────────────────────────────────────────
 requests>=2.31.0
@@ -22,4 +27,4 @@ joblib>=1.3.0
 plotly>=5.20.0
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
-python-dotenv>=1.0.0   # for local .env API key loading
+python-dotenv>=1.0.0

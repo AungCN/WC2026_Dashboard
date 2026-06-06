@@ -1,107 +1,244 @@
 """
 pages/live_scores.py
 ─────────────────────
-Live Scores page for the WC 2026 Dashboard.
+Live Scores page — powered by openfootball/worldcup.json (free, no key).
 
-Shows:
-  • In-play matches with live score + minute
-  • Today's upcoming fixtures
-  • Group standings table
+Data source reality (verified):
+  • openfootball updates the JSON file AFTER each match ends (not real-time)
+  • "Live" tab shows today's matches with scores when available
+  • "Schedule" tab shows full fixture list
+  • Standings are calculated from completed match results in the file
 """
 
 import streamlit as st
 import pandas as pd
-from utils.api_client import get_live_fixtures, get_todays_fixtures, get_standings
-from utils.data_helpers import fixtures_to_df
+from datetime import date, datetime
+from utils.api_client import (
+    get_todays_fixtures,
+    get_all_fixtures,
+    get_standings,
+    get_goal_scorers,
+)
 
 
 def render():
-    st.title("🟢 Live Scores")
-    st.caption("Auto-refreshes every 60 seconds · Powered by API-Football")
+    st.title("⚽ Scores & Schedule")
+    st.caption(
+        "Data: [openfootball/worldcup.json](https://github.com/openfootball/worldcup.json) "
+        "· Free · No API key · Updates after each match"
+    )
 
-    # ── Live matches ───────────────────────────────────────────────────────────
-    st.subheader("In Play Now")
-    live_raw = get_live_fixtures()
-    live_df  = fixtures_to_df(live_raw)
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["📅 Today", "📋 Full Schedule", "🏆 Standings", "🥅 Top Scorers"]
+    )
 
-    if live_df.empty:
-        st.info("No matches currently in play. Check back during match times.")
-    else:
-        for _, row in live_df.iterrows():
-            _render_scoreboard(row, live=True)
+    with tab1:
+        _render_today()
 
-    # ── Today's fixtures ───────────────────────────────────────────────────────
-    st.divider()
-    st.subheader("Today's Fixtures")
-    today_raw = get_todays_fixtures()
-    today_df  = fixtures_to_df(today_raw)
+    with tab2:
+        _render_schedule()
 
-    # Split by status: finished vs upcoming
-    if not today_df.empty:
-        finished  = today_df[today_df["status"].isin(["Match Finished"])]
-        upcoming  = today_df[~today_df["status"].isin(["Match Finished", "First Half",
-                                                        "Second Half", "Half Time"])]
-        if not upcoming.empty:
-            st.markdown("**Upcoming**")
-            for _, row in upcoming.iterrows():
-                _render_scoreboard(row, live=False)
+    with tab3:
+        _render_standings()
 
-        if not finished.empty:
-            st.markdown("**Finished**")
-            for _, row in finished.iterrows():
-                _render_scoreboard(row, live=False)
-    else:
-        st.info("No fixtures scheduled today.")
-
-    # ── Standings ──────────────────────────────────────────────────────────────
-    st.divider()
-    st.subheader("Group Standings")
-    standings_raw = get_standings()
-
-    if not standings_raw:
-        st.info("Standings will appear once the group stage begins.")
-    else:
-        for group in standings_raw:
-            rows = []
-            for team in group:
-                rows.append({
-                    "Team":   team["team"]["name"],
-                    "P":      team["all"]["played"],
-                    "W":      team["all"]["win"],
-                    "D":      team["all"]["draw"],
-                    "L":      team["all"]["lose"],
-                    "GF":     team["all"]["goals"]["for"],
-                    "GA":     team["all"]["goals"]["against"],
-                    "GD":     team["goalsDiff"],
-                    "Pts":    team["points"],
-                })
-            df = pd.DataFrame(rows).sort_values("Pts", ascending=False)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+    with tab4:
+        _render_scorers()
 
 
-def _render_scoreboard(row: pd.Series, live: bool):
-    """Render a single fixture as a clean scoreboard card."""
+# ── Tab 1: Today ───────────────────────────────────────────────────────────────
+def _render_today():
+    today    = date.today().isoformat()
+    fixtures = get_todays_fixtures()
+
+    if not fixtures:
+        # Tournament hasn't started yet — show next match day
+        all_fix  = get_all_fixtures()
+        upcoming = [f for f in all_fix if f["date"] >= today]
+        if upcoming:
+            next_date = upcoming[0]["date"]
+            next_matches = [f for f in all_fix if f["date"] == next_date]
+            st.info(
+                f"No matches today ({today}). "
+                f"Tournament begins **{next_date}** — "
+                f"{len(next_matches)} matches on opening day."
+            )
+            st.subheader(f"Next match day — {next_date}")
+            for f in next_matches:
+                _scoreboard_card(f)
+        else:
+            st.info("No upcoming fixtures found.")
+        return
+
+    finished = [f for f in fixtures if f["status"] == "Match Finished"]
+    pending  = [f for f in fixtures if f["status"] != "Match Finished"]
+
+    if pending:
+        st.subheader("Upcoming today")
+        for f in pending:
+            _scoreboard_card(f)
+
+    if finished:
+        st.subheader("Results")
+        for f in finished:
+            _scoreboard_card(f)
+
+
+# ── Tab 2: Full schedule ───────────────────────────────────────────────────────
+def _render_schedule():
+    all_fix = get_all_fixtures()
+    today   = date.today().isoformat()
+
+    # Group by round
+    rounds: dict[str, list] = {}
+    for f in all_fix:
+        rounds.setdefault(f["round"], []).append(f)
+
+    # Filter controls
+    col1, col2 = st.columns(2)
+    with col1:
+        show_filter = st.selectbox(
+            "Show", ["All matches", "Upcoming only", "Completed only"]
+        )
+    with col2:
+        group_filter = st.selectbox(
+            "Group / Round",
+            ["All"] + sorted(set(
+                f["group"] if f["group"] else f["round"] for f in all_fix
+            )),
+        )
+
+    for round_name, matches in rounds.items():
+        if group_filter != "All":
+            matches = [
+                m for m in matches
+                if m["group"] == group_filter or m["round"] == group_filter
+            ]
+        if not matches:
+            continue
+
+        if show_filter == "Upcoming only":
+            matches = [m for m in matches if m["status"] != "Match Finished"]
+        elif show_filter == "Completed only":
+            matches = [m for m in matches if m["status"] == "Match Finished"]
+
+        if not matches:
+            continue
+
+        with st.expander(f"**{round_name}** — {len(matches)} matches", expanded=False):
+            for f in matches:
+                _scoreboard_card(f, compact=True)
+
+
+# ── Tab 3: Standings ───────────────────────────────────────────────────────────
+def _render_standings():
+    standings = get_standings()
+
+    if not standings:
+        st.info(
+            "Standings will populate automatically once matches are played. "
+            "The first match is **Mexico vs South Africa** on June 11."
+        )
+        return
+
+    group_labels = [chr(65 + i) for i in range(len(standings))]  # A, B, C...
+    cols = st.columns(2)
+
+    for i, (label, group) in enumerate(zip(group_labels, standings)):
+        with cols[i % 2]:
+            st.markdown(f"**Group {label}**")
+            df = pd.DataFrame(group)[
+                ["team", "played", "won", "drawn", "lost", "gf", "ga", "gd", "points"]
+            ]
+            df.columns = ["Team", "P", "W", "D", "L", "GF", "GA", "GD", "Pts"]
+            st.dataframe(df, hide_index=True, use_container_width=True)
+
+
+# ── Tab 4: Top scorers ─────────────────────────────────────────────────────────
+def _render_scorers():
+    scorers = get_goal_scorers()
+
+    if not scorers:
+        st.info("Goal scorer data will appear once matches are played.")
+        return
+
+    df = pd.DataFrame(scorers)
+    df.columns = ["Player", "Team", "Goals", "Penalties"]
+    st.dataframe(
+        df.head(20),
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Goals": st.column_config.ProgressColumn(
+                "Goals", min_value=0, max_value=df["Goals"].max(), format="%d"
+            )
+        },
+    )
+
+
+# ── Scoreboard card ────────────────────────────────────────────────────────────
+def _scoreboard_card(f: dict, compact: bool = False):
+    """Render one match as a clean row with score or kick-off time."""
+    home = f["home_team"]
+    away = f["away_team"]
+    hg   = f["home_goals"]
+    ag   = f["away_goals"]
+
     col1, col2, col3 = st.columns([3, 2, 3])
 
     with col1:
-        st.markdown(f"**{row['home_team']}**")
+        st.markdown(f"**{home}**")
 
     with col2:
-        if pd.notna(row["home_goals"]) and pd.notna(row["away_goals"]):
-            score = f"{int(row['home_goals'])} – {int(row['away_goals'])}"
-            if live and pd.notna(row["elapsed"]):
-                label = f"🔴 {score}  {int(row['elapsed'])}\'"
-            else:
-                label = score
+        if hg is not None and ag is not None:
+            ht_str = ""
+            if f["ht_home"] is not None:
+                ht_str = f"<br><span style='font-size:0.7rem;color:gray'>HT {f['ht_home']}–{f['ht_away']}</span>"
+            suffix = ""
+            if f["status"] == "Penalties":
+                p = f.get("goals1")   # repurpose as penalty score if stored
+                suffix = " (Pen)"
+            elif f["status"] == "AET":
+                suffix = " (AET)"
+            label = (
+                f"<div style='text-align:center;font-size:1.2rem;font-weight:600'>"
+                f"{'✅' if f['status']=='Match Finished' else '🔴'} "
+                f"{hg} – {ag}{suffix}</div>{ht_str}"
+            )
         else:
-            label = f"🕐 {row['date']}"
-        st.markdown(f"<div style='text-align:center;font-size:1.1rem;font-weight:600'>{label}</div>",
-                    unsafe_allow_html=True)
+            label = (
+                f"<div style='text-align:center;font-size:0.95rem;color:gray'>"
+                f"🕐 {f['kickoff']} {f['timezone']}</div>"
+            )
+        st.markdown(label, unsafe_allow_html=True)
 
     with col3:
-        st.markdown(f"<div style='text-align:right'><b>{row['away_team']}</b></div>",
-                    unsafe_allow_html=True)
+        st.markdown(
+            f"<div style='text-align:right'><b>{away}</b></div>",
+            unsafe_allow_html=True,
+        )
 
-    st.markdown(f"<div style='text-align:center;font-size:0.75rem;color:gray'>{row.get('venue_city','')}</div>",
-                unsafe_allow_html=True)
+    if not compact:
+        venue = f.get("venue_city", "")
+        group = f.get("group", "")
+        meta  = " · ".join(filter(None, [group, venue, f["date"]]))
+        if meta:
+            st.markdown(
+                f"<div style='text-align:center;font-size:0.72rem;color:gray'>{meta}</div>",
+                unsafe_allow_html=True,
+            )
+
+        # Goal scorers if available
+        goals1 = f.get("goals1", [])
+        goals2 = f.get("goals2", [])
+        if goals1 or goals2:
+            gc1, gc2 = st.columns(2)
+            with gc1:
+                for g in goals1:
+                    pen = " (P)" if g.get("penalty") else ""
+                    st.caption(f"⚽ {g['name']} {g['minute']}'{pen}")
+            with gc2:
+                for g in goals2:
+                    pen = " (P)" if g.get("penalty") else ""
+                    st.caption(f"⚽ {g['name']} {g['minute']}'{pen}")
+
     st.divider()
