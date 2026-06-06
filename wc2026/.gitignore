@@ -1,0 +1,18 @@
+# Secrets — NEVER commit API keys
+.streamlit/secrets.toml
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+env/
+venv/
+
+# ML model files (large binaries — store separately if needed)
+models/saved/*.joblib
+
+# OS
+.DS_Store
+Thumbs.db
