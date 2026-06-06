@@ -45,7 +45,7 @@ else:
 
 # ── Sidebar navigation ─────────────────────────────────────────────────────────
 st.sidebar.title("FIFA World Cup 2026")
-st.sideber.title("United States Canada Mexico")
+st.sidebar.title("United States: Canada: Mexico")
 st.sidebar.caption("Live Analytics & Predictions")
 
 page = st.sidebar.radio(
