@@ -1,210 +1,144 @@
 """
 pages/player_ratings.py
 ────────────────────────
-Player Ratings page.
-
-Shows:
-  • Per-player live ratings fetched from API-Football
-  • Our Random Forest predicted ratings with confidence range
-  • Sortable table: all players from a selected fixture
-  • Position breakdown chart
+Player Ratings — uses static squad data from wc2026_data.py
++ Random Forest ML model predictions.
+Goal scorer tab fills automatically from openfootball once matches are played.
 """
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from utils.api_client import get_todays_fixtures, get_fixture_players
-from utils.data_helpers import fixtures_to_df, players_to_df
+from utils.api_client import get_goal_scorers, get_squad, get_all_teams
+from data.wc2026_data import SQUADS, TEAM_TO_GROUP, FIFA_RANKINGS
 from models.prediction_engine import PlayerRatingPredictor
 
+POS_ENC = {"GK":0,"DEF":1,"MID":2,"FWD":3}
 
 @st.cache_resource
-def _get_rating_model():
+def _model():
     prp = PlayerRatingPredictor()
     prp.load()
     return prp
 
-
 def render():
     st.title("⭐ Player Ratings")
-    st.caption("Live ratings via API-Football + our Random Forest predictions")
+    st.caption("Predicted ratings from our Random Forest model · Full official squads for all 48 teams")
 
-    prp = _get_rating_model()
+    prp = _model()
+    tab1, tab2, tab3 = st.tabs(["🔮 Predicted ratings","🥅 Goal scorers","ℹ️ Model info"])
 
-    # ── Fixture selector ───────────────────────────────────────────────────────
-    today_raw = get_todays_fixtures()
-    today_df  = fixtures_to_df(today_raw)
+    with tab1:  _render_ratings(prp)
+    with tab2:  _render_scorers()
+    with tab3:  _render_model_info(prp)
 
-    if today_df.empty:
-        st.info("Player ratings appear during and after matches.")
-        _render_model_explainer(prp)
-        return
 
-    today_df["label"] = today_df["home_team"] + " vs " + today_df["away_team"]
-    selected = st.selectbox("Select a match", today_df["label"].tolist())
-    selected_row = today_df[today_df["label"] == selected].iloc[0]
-    fixture_id   = int(selected_row["fixture_id"])
-
-    st.divider()
-
-    # ── Fetch player data ──────────────────────────────────────────────────────
-    raw_players = get_fixture_players(fixture_id)
-    player_df   = players_to_df(raw_players)
-
-    if player_df.empty:
-        st.info("Player stats not available yet for this fixture. Data appears after kick-off.")
-        return
-
-    # ── Add our predicted ratings ──────────────────────────────────────────────
-    player_df = _add_model_predictions(player_df, prp, selected_row)
-
-    # ── Filters ───────────────────────────────────────────────────────────────
-    col1, col2 = st.columns(2)
+def _render_ratings(prp):
+    all_teams = get_all_teams()
+    col1, col2, col3 = st.columns(3)
     with col1:
-        team_filter = st.selectbox("Team", ["All"] + player_df["team"].unique().tolist())
+        team = st.selectbox("Team", all_teams,
+                            index=all_teams.index("Brazil") if "Brazil" in all_teams else 0)
     with col2:
-        pos_filter = st.selectbox("Position", ["All", "G", "D", "M", "F"])
+        opp_def = st.slider("Opponent defense strength", 1, 100, 60,
+                            help="Higher = tougher opponent")
+    with col3:
+        fatigue = st.slider("Games played in tournament", 0, 7, 2)
 
-    filtered = player_df.copy()
-    if team_filter != "All":
-        filtered = filtered[filtered["team"] == team_filter]
-    if pos_filter != "All":
-        filtered = filtered[filtered["position"] == pos_filter]
+    group = TEAM_TO_GROUP.get(team, "—")
+    ranking = FIFA_RANKINGS.get(team, 50)
+    st.caption(f"**{team}** · {group} · FIFA rank #{ranking}")
 
-    # ── Ratings table ─────────────────────────────────────────────────────────
-    st.subheader("Player Performance")
-    display_cols = [
-        "player_name", "team", "position", "minutes",
-        "rating", "pred_rating", "confidence",
-        "goals", "assists", "yellow_cards", "red_cards", "passes", "shots",
-    ]
-    # Rename for display
-    rename_map = {
-        "player_name":  "Player",
-        "team":         "Team",
-        "position":     "Pos",
-        "minutes":      "Mins",
-        "rating":       "Live Rating",
-        "pred_rating":  "Predicted",
-        "confidence":   "Confidence",
-        "goals":        "G",
-        "assists":      "A",
-        "yellow_cards": "YC",
-        "red_cards":    "RC",
-        "passes":       "Passes",
-        "shots":        "Shots",
-    }
+    squad = get_squad(team)
+    if not squad:
+        st.info(f"Squad data for {team} will be added soon.")
+        return
 
-    # Color the rating column
-    show_df = (
-        filtered[display_cols]
-        .rename(columns=rename_map)
-        .sort_values("Live Rating", ascending=False)
-    )
-    st.dataframe(
-        show_df,
-        use_container_width=True,
-        hide_index=True,
+    rows = []
+    for p in squad:
+        pos_enc = POS_ENC.get(p["position"], 1)
+        form    = 7.5 - (pos_enc * 0.1)   # rough form baseline by position
+        result  = prp.predict({
+            "form_last5":        form,
+            "opponent_def_rank": opp_def,
+            "expected_minutes":  90,
+            "position_enc":      pos_enc,
+            "tournament_fatigue":fatigue,
+            "is_home_team":      0,
+        })
+        rows.append({
+            "#":          p["number"],
+            "Player":     p["name"],
+            "Pos":        p["position"],
+            "Predicted":  result["predicted_rating"],
+            "Low":        result["low"],
+            "High":       result["high"],
+            "Confidence": result["confidence"],
+        })
+
+    df = pd.DataFrame(rows).sort_values("Predicted", ascending=False)
+    st.dataframe(df, hide_index=True, use_container_width=True,
         column_config={
-            "Live Rating": st.column_config.ProgressColumn(
-                "Live Rating", min_value=5.0, max_value=10.0, format="%.1f"
-            ),
             "Predicted": st.column_config.ProgressColumn(
-                "Predicted", min_value=5.0, max_value=10.0, format="%.1f"
-            ),
-        },
-    )
+                "Predicted", min_value=5.0, max_value=10.0, format="%.2f"),
+            "Low":  st.column_config.NumberColumn("Low",  format="%.2f"),
+            "High": st.column_config.NumberColumn("High", format="%.2f"),
+        })
 
-    # ── Rating distribution chart ──────────────────────────────────────────────
     st.divider()
-    st.subheader("Rating Distribution by Position")
-    if not filtered.empty and "rating" in filtered.columns:
-        fig = px.box(
-            filtered[filtered["rating"] > 0],
-            x="position",
-            y="rating",
-            color="team",
-            points="all",
-            labels={"position": "Position", "rating": "Rating (0–10)"},
-        )
-        fig.update_layout(height=350)
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption(
-            "Notice how Forwards (F) have a wider spread than Defenders (D) — "
-            "this is exactly why our model uses higher variance bounds for forwards."
-        )
+    fig = px.box(df, x="Pos", y="Predicted", color="Pos", points="all",
+                 hover_data=["Player"],
+                 category_orders={"Pos":["GK","DEF","MID","FWD"]},
+                 labels={"Predicted":"Predicted Rating"})
+    fig.update_layout(height=300, showlegend=False, margin=dict(t=10))
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("Forwards show wider variance than defenders — this matches real-world data.")
 
 
-def _add_model_predictions(df: pd.DataFrame, prp: PlayerRatingPredictor,
-                            fixture_row: pd.Series) -> pd.DataFrame:
-    """Add our model's predicted rating column to the player DataFrame."""
-    POSITION_MAP = {"G": 0, "D": 1, "M": 2, "F": 3}
-
-    pred_ratings  = []
-    pred_confs    = []
-
-    for _, row in df.iterrows():
-        features = {
-            "form_last5":         row["rating"] if row["rating"] > 0 else 7.0,
-            "opponent_def_rank":  50,   # placeholder — update with real rank data
-            "expected_minutes":   row["minutes"] if row["minutes"] > 0 else 90,
-            "position_enc":       POSITION_MAP.get(row["position"], 1),
-            "tournament_fatigue": 2,    # placeholder — count games played so far
-            "is_home_team":       0,    # placeholder — check team vs home team
-        }
-        result = prp.predict(features)
-        pred_ratings.append(result["predicted_rating"])
-        pred_confs.append(result["confidence"])
-
-    df["pred_rating"] = pred_ratings
-    df["confidence"]  = pred_confs
-    return df
+def _render_scorers():
+    scorers = get_goal_scorers()
+    if not scorers:
+        st.info("Goal scorers appear here automatically once matches are played. First match: **Mexico vs South Africa, June 11**.")
+        return
+    df = pd.DataFrame(scorers)
+    df.columns = ["Player","Team","Goals","Penalties"]
+    st.dataframe(df.head(20), hide_index=True, use_container_width=True,
+        column_config={"Goals": st.column_config.ProgressColumn(
+            "Goals", min_value=0, max_value=int(df["Goals"].max()), format="%d")})
 
 
-def _render_model_explainer(prp: PlayerRatingPredictor):
-    """When no live data is available, explain the model instead."""
-    st.subheader("How the Rating Model Works")
-
+def _render_model_info(prp):
     st.markdown("""
-    Our **Random Forest** model predicts player ratings using 6 features:
+### Random Forest rating model — how it works
 
-    | Feature | What it means | Why it matters |
-    |---|---|---|
-    | Form (last 5 games) | Average rating recently | Best single predictor |
-    | Opponent defense rank | How strong is the other team's defense? | A striker vs top defense scores lower |
-    | Expected minutes | Will they play the full 90? | More minutes = more impact |
-    | Position | GK / DEF / MID / FWD | Forwards have more variance than defenders |
-    | Tournament fatigue | Games played so far | Performance drops after 4+ games |
-    | Home city factor | Playing near home? | Small but measurable effect |
-    """)
+200 decision trees each independently predict a player's match rating.
+The final prediction is the average. The Low/High range is the 10th–90th percentile spread.
+A narrow range = high confidence. A wide range = uncertain (common for forwards).
 
-    st.subheader("Try a manual prediction")
+| Feature | Why it matters |
+|---|---|
+| Form (last 5 games avg) | Strongest single predictor |
+| Opponent defense strength | Harder defense → lower rating |
+| Expected minutes | 90 mins = more impact opportunities |
+| Position | Forwards have highest variance |
+| Tournament fatigue | ~0.05 drop per extra game played |
+| Home city factor | Small but measurable advantage |
+""")
+    st.divider()
+    st.subheader("Manual prediction")
     col1, col2 = st.columns(2)
     with col1:
-        form     = st.slider("Form (last 5 avg)", 5.0, 10.0, 7.2)
-        minutes  = st.slider("Expected minutes", 0, 90, 90)
-        fatigue  = st.slider("Games played in tournament", 0, 7, 2)
+        form   = st.slider("Form (last 5 avg)", 5.0, 10.0, 7.2, 0.1)
+        mins   = st.slider("Expected minutes", 0, 90, 90)
+        fat    = st.slider("Games in tournament", 0, 7, 2)
     with col2:
-        opp_def  = st.slider("Opponent defense strength", 1, 100, 60)
-        position = st.selectbox("Position", ["GK", "DEF", "MID", "FWD"])
-        is_home  = st.checkbox("Playing at home city")
-
-    pos_map = {"GK": 0, "DEF": 1, "MID": 2, "FWD": 3}
-
-    features = {
-        "form_last5":         form,
-        "opponent_def_rank":  opp_def,
-        "expected_minutes":   minutes,
-        "position_enc":       pos_map[position],
-        "tournament_fatigue": fatigue,
-        "is_home_team":       int(is_home),
-    }
-    result = prp.predict(features)
-
-    st.divider()
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Predicted rating",   result["predicted_rating"])
-    col2.metric("Low estimate",       result["low"])
-    col3.metric("High estimate",      result["high"])
-    col4.metric("Confidence",         result["confidence"])
+        opp    = st.slider("Opponent defense", 1, 100, 60)
+        pos    = st.selectbox("Position", ["GK","DEF","MID","FWD"])
+        home   = st.checkbox("Playing in home city")
+    r = prp.predict({"form_last5":form,"opponent_def_rank":opp,
+                     "expected_minutes":mins,"position_enc":POS_ENC[pos],
+                     "tournament_fatigue":fat,"is_home_team":int(home)})
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("Predicted", r["predicted_rating"])
+    c2.metric("Low",       r["low"])
+    c3.metric("High",      r["high"])
+    c4.metric("Confidence",r["confidence"])

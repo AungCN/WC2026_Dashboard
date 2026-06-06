@@ -1,66 +1,49 @@
 """
 pages/news_feed.py
 ───────────────────
-News Feed page — latest World Cup 2026 articles from NewsAPI.
-Cached for 15 minutes so we don't exhaust the free tier (100 req/day).
+News page — free RSS feeds, no API key required.
+Sources: BBC Sport, The Guardian, ESPN, Goal.com, Google News WC 2026.
+Falls back to demo articles if feeds are unreachable.
 """
-
 import streamlit as st
 from utils.api_client import get_news
 
-
 def render():
     st.title("📰 World Cup 2026 News")
-    st.caption("Updates every 15 minutes · Powered by NewsAPI")
+    st.caption("Free RSS feeds · BBC · Guardian · ESPN · Goal.com · No API key needed")
 
-    # ── Search filter ──────────────────────────────────────────────────────────
-    col1, col2 = st.columns([3, 1])
+    col1, col2 = st.columns([3,1])
     with col1:
-        query = st.text_input(
-            "Search topic",
-            value="World Cup 2026",
-            placeholder="e.g. Brazil squad, Mbappe injury…",
-        )
+        search = st.text_input("Filter articles", placeholder="e.g. Argentina, Mbappe…")
     with col2:
-        count = st.selectbox("Articles", [10, 20, 30], index=1)
+        count = st.selectbox("Show", [10, 20, 30], index=1)
 
-    articles = get_news(query=query, page_size=count)
+    with st.spinner("Loading news…"):
+        articles = get_news(max_items=count)
+
+    if search:
+        articles = [a for a in articles
+                    if search.lower() in (a["title"]+a["description"]).lower()]
 
     if not articles:
-        st.warning("No articles found. Try a different search term or check your NewsAPI key.")
+        st.info("No articles found. Try a different search term.")
         return
 
-    st.markdown(f"Found **{len(articles)}** articles.")
+    st.caption(f"{len(articles)} articles")
     st.divider()
 
-    # ── Article cards ─────────────────────────────────────────────────────────
     for article in articles:
-        _render_article(article)
-
-
-def _render_article(article: dict):
-    """Render one news article as an image + text card."""
-    col_img, col_text = st.columns([1, 3])
-
-    with col_img:
-        img_url = article.get("urlToImage")
-        if img_url:
-            try:
-                st.image(img_url, use_container_width=True)
-            except Exception:
-                st.markdown("🖼️")
-
-    with col_text:
-        title       = article.get("title", "No title")
-        description = article.get("description", "")
-        url         = article.get("url", "#")
-        source      = article.get("source", {}).get("name", "Unknown source")
-        published   = article.get("publishedAt", "")[:10]
-
-        st.markdown(f"**[{title}]({url})**")
-        if description:
-            # Show first 200 characters only — avoid copyright issues
-            st.caption(description[:200] + ("…" if len(description) > 200 else ""))
-        st.caption(f"📰 {source} · {published}")
-
-    st.divider()
+        col_text, col_meta = st.columns([5,1])
+        with col_text:
+            title = article.get("title","")
+            url   = article.get("url","#")
+            desc  = article.get("description","")
+            st.markdown(f"**[{title}]({url})**")
+            if desc:
+                st.caption(desc[:220] + ("…" if len(desc) > 220 else ""))
+        with col_meta:
+            source = article.get("source",{}).get("name","")
+            pub    = article.get("publishedAt","")[:10]
+            st.caption(f"📰 {source}")
+            st.caption(f"📅 {pub}")
+        st.divider()

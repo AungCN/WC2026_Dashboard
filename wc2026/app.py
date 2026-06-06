@@ -44,16 +44,13 @@ else:
         st.rerun()
 
 # ── Sidebar navigation ─────────────────────────────────────────────────────────
-st.sidebar.image(
-    "https://upload.wikimedia.org/wikipedia/en/thumb/3/3e/2026_FIFA_World_Cup.svg/200px-2026_FIFA_World_Cup.svg.png",
-    width=140,
-)
-st.sidebar.title("⚽ WC 2026")
+st.sidebar.image("pages/worldcuplogo2026.png", width=140)
+st.sidebar.title("FIFA World Cup 2026")
 st.sidebar.caption("Live Analytics & Predictions")
 
 page = st.sidebar.radio(
     "Navigate",
-    ["🟢 Live Scores", "📰 News Feed", "🔮 Match Predictions", "⭐ Player Ratings"],
+    ["⚽ Live Scores", "📰 News Feed", "🎯 Match Predictions", "📈 Player Ratings"],
 )
 
 st.sidebar.markdown("---")
@@ -70,11 +67,11 @@ else:
 st.sidebar.caption("Predictions use XGBoost + Poisson models.")
 
 # ── Route to pages ─────────────────────────────────────────────────────────────
-if page == "🟢 Live Scores":
+if page == "⚽ Live Scores":
     live_scores.render()
 elif page == "📰 News Feed":
     news_feed.render()
-elif page == "🔮 Match Predictions":
+elif page == "🎯 Match Predictions":
     predictions.render()
-elif page == "⭐ Player Ratings":
+elif page == "📈 Player Ratings":
     player_ratings.render()
