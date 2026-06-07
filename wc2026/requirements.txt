@@ -1,31 +1,35 @@
-# WC 2026 Dashboard — Python Dependencies
+# ══════════════════════════════════════════════════════════════════════════════
+# WC 2026 Dashboard — Python dependencies
+# ══════════════════════════════════════════════════════════════════════════════
 #
-# INSTALL (inside your venv):
+# Install:
 #   pip install -r requirements.txt
 #
-# If you get a ModuleNotFoundError for any package, run the above command
-# again — it means that package was skipped or the venv was not active.
+# Python 3.10+ required (uses match statements and type hints)
+# ══════════════════════════════════════════════════════════════════════════════
+
 
 # ── Web framework ──────────────────────────────────────────────────────────────
 streamlit>=1.35.0
-streamlit-autorefresh==1.0.1      # pip install streamlit-autorefresh
+streamlit-autorefresh==1.0.1   # optional: graceful fallback exists if missing
 
-# ── API & networking ───────────────────────────────────────────────────────────
-requests>=2.31.0
 
-# ── Data manipulation ──────────────────────────────────────────────────────────
+# ── Networking ─────────────────────────────────────────────────────────────────
+requests>=2.31.0               # API + openfootball JSON fetch
+feedparser>=6.0.11             # RSS news feeds (BBC, Guardian, ESPN — no key needed)
+
+
+# ── Data ───────────────────────────────────────────────────────────────────────
 pandas>=2.0.0
 numpy>=1.26.0
 
+
 # ── Machine learning ───────────────────────────────────────────────────────────
-scikit-learn>=1.4.0
-xgboost>=2.0.0
-statsmodels>=0.14.0
-joblib>=1.3.0
+scikit-learn>=1.4.0            # RandomForestRegressor (player ratings)
+xgboost>=2.0.0                 # XGBClassifier (match result predictions)
+statsmodels>=0.14.0            # NegativeBinomial (card predictions)
+joblib>=1.3.0                  # save/load trained models to disk
 
-# ── Visualisation ──────────────────────────────────────────────────────────────
-plotly>=5.20.0
 
-# ── Utilities ─────────────────────────────────────────────────────────────────
-python-dotenv>=1.0.0
-feedparser>=6.0.11
+# ── Visualisation ─────────────────────────────────────────────────────────────
+plotly>=5.20.0                 # bar charts, box plots on predictions page
