@@ -169,7 +169,7 @@ def _render_scorers():
         use_container_width=True,
         column_config={
             "Goals": st.column_config.ProgressColumn(
-                "Goals", min_value=0, max_value=df["Goals"].max(), format="%d"
+                "Goals", min_value=0, max_value=int(df["Goals"].max()), format="%d"
             )
         },
     )
