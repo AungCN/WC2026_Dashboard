@@ -1,16 +1,13 @@
 """
 World Cup 2026 – Live Analytics & Prediction Dashboard
-install requirements -> pip install -r requirements.txt
-Train Models -> python models/train_models.py
-Entry point: run with  →  streamlit run app.py
+Entry point:  streamlit run app.py
 """
 
 import time
 import streamlit as st
-from pages import live_scores, news_feed, predictions, player_ratings
+from pages import live_scores, news_feed, predictions, player_ratings, bracket
 
 # ── streamlit-autorefresh (optional — graceful fallback if not installed) ──────
-# Install with:  pip install streamlit-autorefresh
 try:
     from streamlit_autorefresh import st_autorefresh
     _HAS_AUTOREFRESH = True
@@ -26,8 +23,6 @@ st.set_page_config(
 )
 
 # ── Auto-refresh every 60 seconds ─────────────────────────────────────────────
-# Uses streamlit-autorefresh when available; otherwise a lightweight fallback
-# that tracks elapsed time in session state and calls st.rerun().
 REFRESH_INTERVAL_S = 60
 
 if _HAS_AUTOREFRESH:
@@ -35,43 +30,44 @@ if _HAS_AUTOREFRESH:
 else:
     if "last_refresh" not in st.session_state:
         st.session_state.last_refresh = time.time()
-
     elapsed   = int(time.time() - st.session_state.last_refresh)
     remaining = max(0, REFRESH_INTERVAL_S - elapsed)
-
     if remaining == 0:
         st.session_state.last_refresh = time.time()
         st.rerun()
 
-# ── Sidebar navigation ─────────────────────────────────────────────────────────
-st.sidebar.title("FIFA World Cup 2026")
-st.sidebar.title("United States: Canada: Mexico")
+# ── Sidebar ────────────────────────────────────────────────────────────────────
+st.sidebar.image(
+    "https://upload.wikimedia.org/wikipedia/en/thumb/3/3e/2026_FIFA_World_Cup.svg/200px-2026_FIFA_World_Cup.svg.png",
+    width=140,
+)
+st.sidebar.title("⚽ WC 2026")
 st.sidebar.caption("Live Analytics & Predictions")
 
 page = st.sidebar.radio(
     "Navigate",
-    ["⚽ Live Scores", "📰 News Feed", "🎯 Match Predictions", "📈 Player Ratings"],
+    [
+        "🟢 Live Scores",
+        "🏆 Bracket & Schedule",
+        "📰 News Feed",
+        "🔮 Match Predictions",
+        "⭐ Player Ratings",
+    ],
 )
 
 st.sidebar.markdown("---")
-
-# Show refresh status in sidebar
 if _HAS_AUTOREFRESH:
     st.sidebar.caption("🔄 Auto-refreshes every 60 seconds.")
 else:
     st.sidebar.caption(
-        "💡 Install `streamlit-autorefresh` for seamless live updates:\n"
+        "💡 Install `streamlit-autorefresh` for live updates:\n"
         "`pip install streamlit-autorefresh`"
     )
+st.sidebar.caption("Predictions: XGBoost + Poisson · Data: openfootball")
 
-st.sidebar.caption("Predictions use XGBoost + Poisson models.")
-
-# ── Route to pages ─────────────────────────────────────────────────────────────
-if page == "⚽ Live Scores":
-    live_scores.render()
-elif page == "📰 News Feed":
-    news_feed.render()
-elif page == "🎯 Match Predictions":
-    predictions.render()
-elif page == "📈 Player Ratings":
-    player_ratings.render()
+# ── Route ──────────────────────────────────────────────────────────────────────
+if   page == "🟢 Live Scores":        live_scores.render()
+elif page == "🏆 Bracket & Schedule": bracket.render()
+elif page == "📰 News Feed":          news_feed.render()
+elif page == "🔮 Match Predictions":  predictions.render()
+elif page == "⭐ Player Ratings":     player_ratings.render()
